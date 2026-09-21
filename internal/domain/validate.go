@@ -12,8 +12,8 @@ type MenuItem struct {
 
 // LineItemInput is one line on a create-order request.
 type LineItemInput struct {
-	MenuItemID string
-	Quantity   int
+	MenuItemID string `json:"menu_item_id"`
+	Quantity   int    `json:"quantity"`
 }
 
 // ValidateLineItems checks cart contents against the current menu.

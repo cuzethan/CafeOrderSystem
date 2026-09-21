@@ -175,6 +175,41 @@ func (s *OrderService) ProcessOrder(orderID string) error {
 	return nil
 }
 
+// Get loads an order by id.
+func (s *OrderService) Get(orderID string) (Order, error) {
+	order, ok, err := s.orders.GetByID(orderID)
+	if err != nil {
+		return Order{}, err
+	}
+	if !ok {
+		return Order{}, ErrOrderNotFound
+	}
+	return order, nil
+}
+
+// UpdateStatus advances (or cancels) an order when the transition is legal,
+// then notifies kitchen clients.
+func (s *OrderService) UpdateStatus(orderID string, to domain.Status) (Order, error) {
+	order, ok, err := s.orders.GetByID(orderID)
+	if err != nil {
+		return Order{}, err
+	}
+	if !ok {
+		return Order{}, ErrOrderNotFound
+	}
+	if err := domain.CanTransition(order.Status, to); err != nil {
+		return Order{}, err
+	}
+	if err := s.orders.UpdateStatus(orderID, to); err != nil {
+		return Order{}, fmt.Errorf("update status: %w", err)
+	}
+	order.Status = to
+	if err := s.notifier.NotifyOrderUpdated(order); err != nil {
+		return Order{}, fmt.Errorf("notify: %w", err)
+	}
+	return order, nil
+}
+
 type noopNotifier struct{}
 
 func (noopNotifier) NotifyOrderUpdated(Order) error { return nil }
