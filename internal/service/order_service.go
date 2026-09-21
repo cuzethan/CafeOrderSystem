@@ -33,20 +33,20 @@ type CreateOrderInput struct {
 
 // OrderLine is a persisted line on an order.
 type OrderLine struct {
-	MenuItemID     string
-	Quantity       int
-	UnitPriceCents int
+	MenuItemID     string `json:"menu_item_id"`
+	Quantity       int    `json:"quantity"`
+	UnitPriceCents int    `json:"unit_price_cents"`
 }
 
 // Order is the service-layer order aggregate.
 type Order struct {
-	ID             string
-	KioskID        string
-	CustomerName   string
-	IdempotencyKey string
-	Status         domain.Status
-	TotalCents     int
-	Items          []OrderLine
+	ID             string        `json:"id"`
+	KioskID        string        `json:"kiosk_id"`
+	CustomerName   string        `json:"customer_name,omitempty"`
+	IdempotencyKey string        `json:"idempotency_key"`
+	Status         domain.Status `json:"status"`
+	TotalCents     int           `json:"total_cents"`
+	Items          []OrderLine   `json:"items"`
 }
 
 // OrderStore persists orders.

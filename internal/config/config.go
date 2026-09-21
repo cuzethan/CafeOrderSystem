@@ -17,13 +17,10 @@ func Load() (Config, error) {
 	cfg := Config{
 		HTTPAddr:    getenv("HTTP_ADDR", ":8080"),
 		DatabaseURL: os.Getenv("DATABASE_URL"),
-		RabbitMQURL: os.Getenv("RABBITMQ_URL"),
+		RabbitMQURL: getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/"),
 	}
 	if cfg.DatabaseURL == "" {
 		return Config{}, fmt.Errorf("DATABASE_URL is required")
-	}
-	if cfg.RabbitMQURL == "" {
-		return Config{}, fmt.Errorf("RABBITMQ_URL is required")
 	}
 	return cfg, nil
 }

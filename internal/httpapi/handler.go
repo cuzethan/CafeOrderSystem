@@ -1,33 +1,54 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/cuzethan/CafeOrderSystem/internal/domain"
+	"github.com/cuzethan/CafeOrderSystem/internal/metrics"
 	"github.com/cuzethan/CafeOrderSystem/internal/service"
 )
+
+// ReadyChecker reports whether dependent infrastructure is reachable.
+type ReadyChecker interface {
+	Ping(ctx context.Context) error
+}
 
 // Handler exposes REST endpoints for kiosks and kitchen status updates.
 type Handler struct {
 	Orders *service.OrderService
 	Menu   service.MenuStore
+	Ready  ReadyChecker
 }
 
 func (h *Handler) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", h.Health)
+	mux.HandleFunc("GET /ready", h.Readyz)
+	mux.Handle("GET /metrics", metrics.Handler())
 	mux.HandleFunc("GET /menu", h.GetMenu)
 	mux.HandleFunc("POST /orders", h.CreateOrder)
 	mux.HandleFunc("GET /orders/{id}", h.GetOrder)
 	mux.HandleFunc("PATCH /orders/{id}/status", h.UpdateStatus)
-	return mux
+	return withMetrics(mux)
 }
 
 func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (h *Handler) Readyz(w http.ResponseWriter, r *http.Request) {
+	if h.Ready != nil {
+		if err := h.Ready.Ping(r.Context()); err != nil {
+			writeError(w, http.StatusServiceUnavailable, "not ready")
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 }
 
 func (h *Handler) GetMenu(w http.ResponseWriter, r *http.Request) {
@@ -73,6 +94,7 @@ func (h *Handler) CreateOrder(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	metrics.OrdersCreated.Inc()
 	writeJSON(w, http.StatusAccepted, order)
 }
 
@@ -125,4 +147,26 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	code int
+}
+
+func (s *statusRecorder) WriteHeader(code int) {
+	s.code = code
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func withMetrics(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec := &statusRecorder{ResponseWriter: w, code: http.StatusOK}
+		next.ServeHTTP(rec, r)
+		path := r.Pattern
+		if path == "" {
+			path = r.URL.Path
+		}
+		metrics.HTTPRequests.WithLabelValues(r.Method, path, strconv.Itoa(rec.code)).Inc()
+	})
 }

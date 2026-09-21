@@ -4,10 +4,10 @@ import "fmt"
 
 // MenuItem is a sellable cafe product.
 type MenuItem struct {
-	ID         string
-	Name       string
-	PriceCents int
-	Available  bool
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	PriceCents int    `json:"price_cents"`
+	Available  bool   `json:"available"`
 }
 
 // LineItemInput is one line on a create-order request.
