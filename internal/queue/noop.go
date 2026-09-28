@@ -1,7 +1,6 @@
 package queue
 
-// NoopPublisher is a stand-in until RabbitMQ publishing is wired.
-// Create still succeeds; jobs are simply not enqueued yet.
+// NoopPublisher drops publish calls. Tests and callers without a broker use it.
 type NoopPublisher struct{}
 
 func (NoopPublisher) PublishOrderCreated(orderID string) error {

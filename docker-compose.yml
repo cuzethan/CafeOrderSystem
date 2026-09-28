@@ -41,6 +41,18 @@ services:
       rabbitmq:
         condition: service_healthy
 
+  worker:
+    build: .
+    entrypoint: ["/app/worker"]
+    environment:
+      DATABASE_URL: postgres://cafe:cafe@postgres:5432/cafe?sslmode=disable
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
   prometheus:
     image: prom/prometheus:v2.54.1
     ports:

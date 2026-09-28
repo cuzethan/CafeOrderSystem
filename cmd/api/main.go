@@ -30,6 +30,12 @@ func main() {
 	}
 	defer store.Close()
 
+	publisher, err := waitForRabbit(cfg.RabbitMQURL)
+	if err != nil {
+		log.Fatalf("rabbitmq: %v", err)
+	}
+	defer publisher.Close()
+
 	hub := ws.NewHub()
 	hub.SetSnapshotProvider(func() []service.Order {
 		orders, err := store.ListOpenOrders(context.Background())
@@ -39,8 +45,7 @@ func main() {
 		return orders
 	})
 
-	// RabbitMQ publisher comes later; noop keeps Create working end-to-end with Postgres.
-	orders := service.NewOrderService(store, store, queue.NoopPublisher{}, hub)
+	orders := service.NewOrderService(store, store, publisher, hub)
 	api := &httpapi.Handler{Orders: orders, Menu: store, Ready: store}
 
 	srv := &http.Server{
@@ -74,6 +79,20 @@ func waitForPostgres(ctx context.Context, databaseURL string) (*postgres.Store, 
 		}
 		last = err
 		log.Printf("waiting for postgres: %v", err)
+		time.Sleep(time.Second)
+	}
+	return nil, last
+}
+
+func waitForRabbit(url string) (*queue.Publisher, error) {
+	var last error
+	for i := 0; i < 30; i++ {
+		publisher, err := queue.NewPublisher(url)
+		if err == nil {
+			return publisher, nil
+		}
+		last = err
+		log.Printf("waiting for rabbitmq: %v", err)
 		time.Sleep(time.Second)
 	}
 	return nil, last

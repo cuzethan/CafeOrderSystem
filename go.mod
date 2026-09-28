@@ -2,7 +2,10 @@ module github.com/cuzethan/CafeOrderSystem
 
 go 1.26.5
 
-require github.com/jackc/pgx/v5 v5.7.4
+require (
+	github.com/jackc/pgx/v5 v5.7.4
+	github.com/rabbitmq/amqp091-go v1.15.0
+)
 
 require (
 	github.com/jackc/pgpassfile v1.0.0 // indirect
