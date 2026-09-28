@@ -1,6 +1,12 @@
 # Cafe Order System
 
-Go backend for cafe kiosk orders. Stack: `net/http`, PostgreSQL, RabbitMQ (planned), WebSockets, Docker, Prometheus.
+My brother and I have recently into makeing some homeade drinks at home, and we wanted to emulate the ordering system in kiosks. I figured it would be pretty cool if I can build software to make it actually work. Because AI can write a lot of my code pretty easily, I spent a lot of time on the designing process. Hope this is pretty cool for you guys :D
+
+-Ethan, written by hand
+
+## Stack:
+
+Golang, PostgreSQL, RabbitMQ (planned), WebSockets, Docker, Prometheus.
 
 ## Flow
 
