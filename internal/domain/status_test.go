@@ -1,6 +1,9 @@
 package domain
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 // TestAllowedTransitions checks the happy-path status moves kitchen staff (and
 // the worker) are allowed to make.
@@ -38,8 +41,8 @@ func TestDisallowedTransitions(t *testing.T) {
 		from Status
 		to   Status
 	}{
-		{StatusPending, StatusReady},      // skip ahead
-		{StatusPending, StatusPreparing},  // skip accepted
+		{StatusPending, StatusReady},     // skip ahead
+		{StatusPending, StatusPreparing}, // skip accepted
 		{StatusPending, StatusCompleted},
 		{StatusAccepted, StatusReady},
 		{StatusAccepted, StatusCompleted},
@@ -53,8 +56,12 @@ func TestDisallowedTransitions(t *testing.T) {
 
 	for _, tc := range cases {
 		// Here we want an error. If err == nil, the bad transition was wrongly allowed.
-		if err := CanTransition(tc.from, tc.to); err == nil {
+		err := CanTransition(tc.from, tc.to)
+		if err == nil {
 			t.Fatalf("expected %s -> %s to be rejected", tc.from, tc.to)
+		}
+		if !errors.Is(err, ErrInvalidTransition) {
+			t.Fatalf("%s -> %s: err = %v, want ErrInvalidTransition", tc.from, tc.to, err)
 		}
 	}
 }

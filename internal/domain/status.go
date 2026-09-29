@@ -1,6 +1,12 @@
 package domain
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
+
+// ErrInvalidTransition is returned when a status change is not allowed.
+var ErrInvalidTransition = errors.New("invalid status transition")
 
 // Status is the lifecycle state of an order.
 type Status string
@@ -35,10 +41,10 @@ var allowedTransitions = map[Status]map[Status]struct{}{
 func CanTransition(from, to Status) error {
 	next, ok := allowedTransitions[from]
 	if !ok {
-		return fmt.Errorf("cannot transition from %s to %s", from, to)
+		return fmt.Errorf("%w: cannot transition from %s to %s", ErrInvalidTransition, from, to)
 	}
 	if _, ok := next[to]; !ok {
-		return fmt.Errorf("cannot transition from %s to %s", from, to)
+		return fmt.Errorf("%w: cannot transition from %s to %s", ErrInvalidTransition, from, to)
 	}
 	return nil
 }

@@ -6,13 +6,13 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
 	"github.com/cuzethan/CafeOrderSystem/internal/config"
+	"github.com/cuzethan/CafeOrderSystem/internal/domain"
 	"github.com/cuzethan/CafeOrderSystem/internal/queue"
 	"github.com/cuzethan/CafeOrderSystem/internal/service"
 	"github.com/cuzethan/CafeOrderSystem/internal/store/postgres"
@@ -70,7 +70,7 @@ func handle(orders *service.OrderService, delivery amqp.Delivery) {
 		return
 	}
 
-	requeue := shouldRequeue(err)
+	requeue := shouldRequeue(err) && queue.DeliveryAttempt(delivery) < queue.MaxDeliveries
 	log.Printf("process %s: %v (requeue=%v)", orderID, err, requeue)
 	if nackErr := delivery.Nack(false, requeue); nackErr != nil {
 		log.Printf("nack %s: %v", orderID, nackErr)
@@ -80,11 +80,14 @@ func handle(orders *service.OrderService, delivery amqp.Delivery) {
 	}
 }
 
+// shouldRequeue reports whether a processing error might succeed later.
+// Missing orders and illegal transitions are dead-lettered immediately.
+// Other errors, including database failures, are retried up to MaxDeliveries.
 func shouldRequeue(err error) bool {
 	if errors.Is(err, service.ErrOrderNotFound) {
 		return false
 	}
-	if strings.Contains(err.Error(), "cannot transition") {
+	if errors.Is(err, domain.ErrInvalidTransition) {
 		return false
 	}
 	return true

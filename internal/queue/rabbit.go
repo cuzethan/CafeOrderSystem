@@ -12,9 +12,15 @@ import (
 const (
 	// OrderCreatedQueue is the durable queue of order IDs waiting for ProcessOrder.
 	OrderCreatedQueue = "order.created"
+	// OrderCreatedDLQ holds order.created messages that will not succeed on retry.
+	OrderCreatedDLQ = "order.created.dlq"
 	// OrderUpdatedQueue is the durable queue of order IDs the API broadcasts to kitchen clients.
 	// The worker publishes here after accept; the hub lives in the API process.
 	OrderUpdatedQueue = "order.updated"
+	// OrderUpdatedDLQ holds order.updated messages that will not succeed on retry.
+	OrderUpdatedDLQ = "order.updated.dlq"
+	// MaxDeliveries is how many times a job is attempted before it is dead-lettered.
+	MaxDeliveries = 5
 )
 
 // Publisher sends order jobs to RabbitMQ.
@@ -137,14 +143,67 @@ func dial(url string) (*amqp.Connection, *amqp.Channel, error) {
 		conn.Close()
 		return nil, nil, fmt.Errorf("rabbitmq channel: %w", err)
 	}
-	for _, name := range []string{OrderCreatedQueue, OrderUpdatedQueue} {
-		if _, err := ch.QueueDeclare(name, true, false, false, false, nil); err != nil {
-			ch.Close()
-			conn.Close()
-			return nil, nil, fmt.Errorf("declare queue %s: %w", name, err)
-		}
+	if err := declareQueues(ch); err != nil {
+		ch.Close()
+		conn.Close()
+		return nil, nil, err
 	}
 	return conn, ch, nil
+}
+
+// declareQueues creates each work queue as a quorum queue with a dead-letter
+// queue. A nack without requeue lands in the DLQ. Transient failures may
+// requeue, and the broker stops that after MaxDeliveries.
+func declareQueues(ch *amqp.Channel) error {
+	pairs := []struct{ work, dlq string }{
+		{OrderCreatedQueue, OrderCreatedDLQ},
+		{OrderUpdatedQueue, OrderUpdatedDLQ},
+	}
+	for _, pair := range pairs {
+		if _, err := ch.QueueDeclare(pair.dlq, true, false, false, false, nil); err != nil {
+			return fmt.Errorf("declare queue %s: %w", pair.dlq, err)
+		}
+		args := amqp.Table{
+			"x-queue-type":              "quorum",
+			"x-delivery-limit":          int32(MaxDeliveries),
+			"x-dead-letter-exchange":    "",
+			"x-dead-letter-routing-key": pair.dlq,
+		}
+		if _, err := ch.QueueDeclare(pair.work, true, false, false, false, args); err != nil {
+			return fmt.Errorf("declare queue %s: %w", pair.work, err)
+		}
+	}
+	return nil
+}
+
+// DeliveryAttempt reports which try this delivery is, starting at 1.
+// Quorum queues set x-delivery-count to the number of previous attempts.
+func DeliveryAttempt(d amqp.Delivery) int {
+	if d.Headers == nil {
+		return 1
+	}
+	n, ok := headerInt(d.Headers["x-delivery-count"])
+	if !ok {
+		return 1
+	}
+	return n + 1
+}
+
+func headerInt(v any) (int, bool) {
+	switch n := v.(type) {
+	case int:
+		return n, true
+	case int8:
+		return int(n), true
+	case int16:
+		return int(n), true
+	case int32:
+		return int(n), true
+	case int64:
+		return int(n), true
+	default:
+		return 0, false
+	}
 }
 
 func closeConn(ch *amqp.Channel, conn *amqp.Connection) error {

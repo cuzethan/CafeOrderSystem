@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"github.com/cuzethan/CafeOrderSystem/internal/domain"
 	"github.com/cuzethan/CafeOrderSystem/internal/metrics"
@@ -143,7 +142,7 @@ func (h *Handler) UpdateStatus(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "order not found")
 			return
 		}
-		if strings.Contains(err.Error(), "cannot transition") {
+		if errors.Is(err, domain.ErrInvalidTransition) {
 			writeError(w, http.StatusConflict, err.Error())
 			return
 		}

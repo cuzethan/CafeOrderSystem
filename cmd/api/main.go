@@ -105,20 +105,26 @@ func handleOrderUpdated(store *postgres.Store, hub *ws.Hub, delivery amqp.Delive
 	orderID := string(delivery.Body)
 	order, ok, err := store.GetByID(orderID)
 	if err != nil {
-		log.Printf("load %s for kitchen: %v", orderID, err)
-		_ = delivery.Nack(false, true)
-		time.Sleep(time.Second)
+		requeue := queue.DeliveryAttempt(delivery) < queue.MaxDeliveries
+		log.Printf("load %s for kitchen: %v (requeue=%v)", orderID, err, requeue)
+		_ = delivery.Nack(false, requeue)
+		if requeue {
+			time.Sleep(time.Second)
+		}
 		return
 	}
 	if !ok {
 		log.Printf("kitchen update for missing order %s", orderID)
-		_ = delivery.Ack(false)
+		_ = delivery.Nack(false, false)
 		return
 	}
 	if err := hub.NotifyOrderUpdated(order); err != nil {
-		log.Printf("broadcast %s: %v", orderID, err)
-		_ = delivery.Nack(false, true)
-		time.Sleep(time.Second)
+		requeue := queue.DeliveryAttempt(delivery) < queue.MaxDeliveries
+		log.Printf("broadcast %s: %v (requeue=%v)", orderID, err, requeue)
+		_ = delivery.Nack(false, requeue)
+		if requeue {
+			time.Sleep(time.Second)
+		}
 		return
 	}
 	if ackErr := delivery.Ack(false); ackErr != nil {

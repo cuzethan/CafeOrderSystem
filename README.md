@@ -18,6 +18,8 @@ Golang, PostgreSQL, RabbitMQ (planned), WebSockets, Docker, Prometheus.
 
 Duplicate `Idempotency-Key` values return the same order and do not create a second one. If that order is still `pending`, the API publishes it again.
 
+A missing order or an illegal status change is dead-lettered immediately. Any other failure is retried up to five times, then sent to `order.created.dlq` or `order.updated.dlq`.
+
 ## Run
 
 ```bash
