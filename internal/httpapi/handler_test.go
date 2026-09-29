@@ -5,10 +5,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/cuzethan/CafeOrderSystem/internal/domain"
 	"github.com/cuzethan/CafeOrderSystem/internal/service"
+	"github.com/cuzethan/CafeOrderSystem/internal/ws"
+	"github.com/gorilla/websocket"
 )
 
 // HTTP handler tests use httptest (fake request/response) and the same in-memory
@@ -82,6 +86,54 @@ func TestCreateOrderRequiresIdempotencyKey(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestKitchenSocketUnavailableWithoutHub(t *testing.T) {
+	h := newTestHandler()
+	req := httptest.NewRequest(http.MethodGet, "/ws/kitchen", nil)
+	rec := httptest.NewRecorder()
+	h.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+}
+
+func TestKitchenSocketUpgradeThroughRoutes(t *testing.T) {
+	h := newTestHandler()
+	hub := ws.NewHub()
+	hub.SetSnapshotProvider(func() []service.Order {
+		return []service.Order{{ID: "ord-1", Status: "accepted"}}
+	})
+	h.Hub = hub
+
+	srv := httptest.NewServer(h.Routes())
+	t.Cleanup(srv.Close)
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws/kitchen"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	var snap ws.Event
+	if err := conn.ReadJSON(&snap); err != nil {
+		t.Fatalf("read snapshot: %v", err)
+	}
+	if snap.Type != "orders.snapshot" || len(snap.Orders) != 1 || snap.Orders[0].ID != "ord-1" {
+		t.Fatalf("snapshot = %#v", snap)
+	}
+
+	hub.Broadcast(ws.Event{Type: "order.updated", OrderID: "ord-1", Status: "preparing"})
+	var upd ws.Event
+	if err := conn.ReadJSON(&upd); err != nil {
+		t.Fatalf("read update: %v", err)
+	}
+	if upd.Type != "order.updated" || upd.OrderID != "ord-1" || upd.Status != "preparing" {
+		t.Fatalf("update = %#v", upd)
 	}
 }
 

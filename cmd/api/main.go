@@ -46,7 +46,7 @@ func main() {
 	})
 
 	orders := service.NewOrderService(store, store, publisher, hub)
-	api := &httpapi.Handler{Orders: orders, Menu: store, Ready: store}
+	api := &httpapi.Handler{Orders: orders, Menu: store, Ready: store, Hub: hub}
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,

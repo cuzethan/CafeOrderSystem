@@ -1,9 +1,11 @@
 package httpapi
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -11,6 +13,7 @@ import (
 	"github.com/cuzethan/CafeOrderSystem/internal/domain"
 	"github.com/cuzethan/CafeOrderSystem/internal/metrics"
 	"github.com/cuzethan/CafeOrderSystem/internal/service"
+	"github.com/cuzethan/CafeOrderSystem/internal/ws"
 )
 
 // ReadyChecker reports whether dependent infrastructure is reachable.
@@ -18,11 +21,12 @@ type ReadyChecker interface {
 	Ping(ctx context.Context) error
 }
 
-// Handler exposes REST endpoints for kiosks and kitchen status updates.
+// Handler exposes REST endpoints for kiosks and the kitchen WebSocket.
 type Handler struct {
 	Orders *service.OrderService
 	Menu   service.MenuStore
 	Ready  ReadyChecker
+	Hub    *ws.Hub
 }
 
 func (h *Handler) Routes() http.Handler {
@@ -34,7 +38,17 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("POST /orders", h.CreateOrder)
 	mux.HandleFunc("GET /orders/{id}", h.GetOrder)
 	mux.HandleFunc("PATCH /orders/{id}/status", h.UpdateStatus)
+	mux.HandleFunc("GET /ws/kitchen", h.KitchenSocket)
 	return withMetrics(mux)
+}
+
+// KitchenSocket upgrades a kitchen display onto the in-memory hub.
+func (h *Handler) KitchenSocket(w http.ResponseWriter, r *http.Request) {
+	if h.Hub == nil {
+		writeError(w, http.StatusServiceUnavailable, "kitchen socket unavailable")
+		return
+	}
+	h.Hub.HandleKitchenWS(w, r)
 }
 
 func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
@@ -157,6 +171,16 @@ type statusRecorder struct {
 func (s *statusRecorder) WriteHeader(code int) {
 	s.code = code
 	s.ResponseWriter.WriteHeader(code)
+}
+
+// Hijack forwards the connection so GET /ws/kitchen can upgrade through the
+// metrics wrapper. Without this, the upgrader sees a writer that cannot hijack.
+func (s *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hj, ok := s.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("response writer does not support hijacking")
+	}
+	return hj.Hijack()
 }
 
 func withMetrics(next http.Handler) http.Handler {
