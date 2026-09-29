@@ -151,6 +151,15 @@ func (s *Store) UpdateStatus(id string, status domain.Status) error {
 	return nil
 }
 
+// CountPending returns how many orders are still waiting for the worker.
+func (s *Store) CountPending(ctx context.Context) (int, error) {
+	var n int
+	err := s.pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM orders WHERE status = $1
+	`, domain.StatusPending).Scan(&n)
+	return n, err
+}
+
 // ListOpenOrders returns non-terminal orders for kitchen snapshots.
 func (s *Store) ListOpenOrders(ctx context.Context) ([]service.Order, error) {
 	rows, err := s.pool.Query(ctx, `

@@ -89,6 +89,17 @@ func (p *Publisher) publish(queueName, body string) error {
 	}
 }
 
+// QueueDepth returns how many messages are waiting on a declared queue.
+func (p *Publisher) QueueDepth(name string) (int, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	q, err := p.ch.QueueInspect(name)
+	if err != nil {
+		return 0, fmt.Errorf("inspect %s: %w", name, err)
+	}
+	return q.Messages, nil
+}
+
 // Close releases the channel and connection.
 func (p *Publisher) Close() error {
 	p.mu.Lock()

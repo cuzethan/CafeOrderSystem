@@ -6,3 +6,7 @@ scrape_configs:
     metrics_path: /metrics
     static_configs:
       - targets: ["api:8080"]
+  - job_name: cafe-worker
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["worker:8080"]

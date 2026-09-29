@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/cuzethan/CafeOrderSystem/internal/config"
 	"github.com/cuzethan/CafeOrderSystem/internal/domain"
+	"github.com/cuzethan/CafeOrderSystem/internal/metrics"
 	"github.com/cuzethan/CafeOrderSystem/internal/queue"
 	"github.com/cuzethan/CafeOrderSystem/internal/service"
 	"github.com/cuzethan/CafeOrderSystem/internal/store/postgres"
@@ -47,11 +49,32 @@ func main() {
 	// so the API can broadcast to connected displays.
 	orders := service.NewOrderService(store, store, queue.NoopPublisher{}, kitchenNotifier{pub: updates})
 
+	mux := http.NewServeMux()
+	mux.Handle("GET /metrics", metrics.WorkerHandler(
+		func() (int, error) { return store.CountPending(context.Background()) },
+		updates.QueueDepth,
+		[]string{queue.OrderCreatedQueue, queue.OrderCreatedDLQ},
+	))
+	srv := &http.Server{
+		Addr:              cfg.HTTPAddr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		log.Printf("worker metrics on %s", cfg.HTTPAddr)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("metrics: %v", err)
+		}
+	}()
+
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-stop
 		_ = consumer.Close()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
 	}()
 
 	log.Printf("worker consuming %s", queue.OrderCreatedQueue)
@@ -71,6 +94,11 @@ func handle(orders *service.OrderService, delivery amqp.Delivery) {
 	}
 
 	requeue := shouldRequeue(err) && queue.DeliveryAttempt(delivery) < queue.MaxDeliveries
+	if requeue {
+		metrics.IncProcessFailure("requeue")
+	} else {
+		metrics.IncProcessFailure("dead_letter")
+	}
 	log.Printf("process %s: %v (requeue=%v)", orderID, err, requeue)
 	if nackErr := delivery.Nack(false, requeue); nackErr != nil {
 		log.Printf("nack %s: %v", orderID, nackErr)

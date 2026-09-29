@@ -48,6 +48,57 @@ func (c labeledCounter) Inc() {
 	httpRequests[key]++
 }
 
+var (
+	failureMu       sync.Mutex
+	processFailures = map[string]uint64{
+		"requeue":     0,
+		"dead_letter": 0,
+	}
+)
+
+// IncProcessFailure records a worker processing failure.
+// result is "requeue" or "dead_letter".
+func IncProcessFailure(result string) {
+	failureMu.Lock()
+	defer failureMu.Unlock()
+	processFailures[result]++
+}
+
+// WorkerHandler exposes worker gauges and the process-failure counter.
+// pending and depth are read on each scrape. A collect error omits that series.
+func WorkerHandler(pending func() (int, error), depth func(queue string) (int, error), queues []string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+
+		var b strings.Builder
+		b.WriteString("# HELP cafe_worker_process_failures_total Order processing failures by outcome.\n")
+		b.WriteString("# TYPE cafe_worker_process_failures_total counter\n")
+		failureMu.Lock()
+		for _, result := range []string{"requeue", "dead_letter"} {
+			fmt.Fprintf(&b, "cafe_worker_process_failures_total{result=%q} %d\n", result, processFailures[result])
+		}
+		failureMu.Unlock()
+
+		if n, err := pending(); err == nil {
+			b.WriteString("# HELP cafe_orders_pending Orders currently in pending status.\n")
+			b.WriteString("# TYPE cafe_orders_pending gauge\n")
+			fmt.Fprintf(&b, "cafe_orders_pending %d\n", n)
+		}
+
+		b.WriteString("# HELP cafe_queue_messages Messages waiting on a queue.\n")
+		b.WriteString("# TYPE cafe_queue_messages gauge\n")
+		for _, name := range queues {
+			n, err := depth(name)
+			if err != nil {
+				continue
+			}
+			fmt.Fprintf(&b, "cafe_queue_messages{queue=%q} %d\n", name, n)
+		}
+
+		_, _ = w.Write([]byte(b.String()))
+	})
+}
+
 // Handler exposes /metrics in Prometheus text exposition format.
 func Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
