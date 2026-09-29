@@ -16,7 +16,7 @@ Golang, PostgreSQL, RabbitMQ (planned), WebSockets, Docker, Prometheus.
 4. The API consumes `order.updated` and broadcasts it on the in-memory kitchen hub. Clients connect at `GET /ws/kitchen` (`orders.snapshot` on connect, then `order.updated`).
 5. Staff `PATCH /orders/{id}/status` to advance: `accepted` → `preparing` → `ready` → `completed` (or cancel early).
 
-Duplicate `Idempotency-Key` values return the same order and do not create a second one.
+Duplicate `Idempotency-Key` values return the same order and do not create a second one. If that order is still `pending`, the API publishes it again.
 
 ## Run
 

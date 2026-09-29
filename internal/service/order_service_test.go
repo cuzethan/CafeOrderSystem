@@ -74,8 +74,10 @@ func TestCreateOrderPersistsPendingAndPublishes(t *testing.T) {
 	}
 }
 
-// Idempotency: if the kiosk retries with the same Idempotency-Key (network glitch,
-// double-tap), we return the SAME order and do not create/publish a second time.
+// Idempotency: a retry with the same Idempotency-Key returns the same order
+// and does not insert again. A still-pending order is published again, because
+// the first publish may have failed after the insert. Once the worker has
+// accepted it, a replay does not publish.
 func TestCreateOrderIdempotentReplayReturnsSameOrderWithoutRepublish(t *testing.T) {
 	svc := newTestOrderService()
 	svc.menu.items["muffin"] = domain.MenuItem{
@@ -92,7 +94,7 @@ func TestCreateOrderIdempotentReplayReturnsSameOrderWithoutRepublish(t *testing.
 		t.Fatalf("first Create: %v", err)
 	}
 
-	// Second submit — same key; should be a no-op replay.
+	// Second submit while still pending — same row, publish retried.
 	second, err := svc.Create(CreateOrderInput{
 		KioskID:        "kiosk-1",
 		IdempotencyKey: "same-key",
@@ -107,8 +109,70 @@ func TestCreateOrderIdempotentReplayReturnsSameOrderWithoutRepublish(t *testing.
 	if svc.store.createCalls != 1 {
 		t.Fatalf("createCalls = %d, want 1", svc.store.createCalls)
 	}
-	if svc.pub.publishCalls != 1 {
-		t.Fatalf("publishCalls = %d, want 1", svc.pub.publishCalls)
+	if svc.pub.publishCalls != 2 || svc.pub.lastOrderID != first.ID {
+		t.Fatalf("publishCalls=%d last=%q want 2 and %q", svc.pub.publishCalls, svc.pub.lastOrderID, first.ID)
+	}
+
+	if err := svc.store.UpdateStatus(first.ID, domain.StatusAccepted); err != nil {
+		t.Fatalf("UpdateStatus: %v", err)
+	}
+	third, err := svc.Create(CreateOrderInput{
+		KioskID:        "kiosk-1",
+		IdempotencyKey: "same-key",
+		Items:          []domain.LineItemInput{{MenuItemID: "muffin", Quantity: 1}},
+	})
+	if err != nil {
+		t.Fatalf("third Create: %v", err)
+	}
+	if third.ID != first.ID || third.Status != domain.StatusAccepted {
+		t.Fatalf("replay = %+v, want accepted %s", third, first.ID)
+	}
+	if svc.store.createCalls != 1 {
+		t.Fatalf("createCalls = %d, want 1", svc.store.createCalls)
+	}
+	if svc.pub.publishCalls != 2 {
+		t.Fatalf("publishCalls = %d, want 2", svc.pub.publishCalls)
+	}
+}
+
+// Insert succeeds and publish fails. The same key must not insert again, and
+// the next attempt must put the saved order on the queue.
+func TestCreateOrderRepublishesPendingAfterFailedPublish(t *testing.T) {
+	svc := newTestOrderService()
+	svc.menu.items["latte"] = domain.MenuItem{
+		ID: "latte", Name: "Latte", PriceCents: 450, Available: true,
+	}
+	svc.pub.err = errors.New("broker down")
+
+	_, err := svc.Create(CreateOrderInput{
+		KioskID:        "kiosk-1",
+		IdempotencyKey: "test-2",
+		Items:          []domain.LineItemInput{{MenuItemID: "latte", Quantity: 1}},
+	})
+	if err == nil {
+		t.Fatal("expected publish error")
+	}
+	if svc.store.createCalls != 1 {
+		t.Fatalf("createCalls = %d, want 1", svc.store.createCalls)
+	}
+
+	svc.pub.err = nil
+	order, err := svc.Create(CreateOrderInput{
+		KioskID:        "kiosk-1",
+		IdempotencyKey: "test-2",
+		Items:          []domain.LineItemInput{{MenuItemID: "latte", Quantity: 1}},
+	})
+	if err != nil {
+		t.Fatalf("retry Create: %v", err)
+	}
+	if order.Status != domain.StatusPending {
+		t.Fatalf("status = %s, want pending", order.Status)
+	}
+	if svc.store.createCalls != 1 {
+		t.Fatalf("createCalls = %d, want 1", svc.store.createCalls)
+	}
+	if svc.pub.publishCalls != 2 || svc.pub.lastOrderID != order.ID {
+		t.Fatalf("publishCalls=%d last=%q want 2 and %q", svc.pub.publishCalls, svc.pub.lastOrderID, order.ID)
 	}
 }
 
@@ -203,10 +267,11 @@ func (f *fakeMenuStore) GetMenu() (map[string]domain.MenuItem, error) {
 type fakePublisher struct {
 	publishCalls int
 	lastOrderID  string
+	err          error
 }
 
 func (f *fakePublisher) PublishOrderCreated(orderID string) error {
 	f.publishCalls++
 	f.lastOrderID = orderID
-	return nil
+	return f.err
 }

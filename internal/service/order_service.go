@@ -96,7 +96,9 @@ func NewOrderService(orders OrderStore, menu MenuStore, pub OrderPublisher, noti
 }
 
 // Create validates, persists a pending order, and publishes a process job.
-// Duplicate IdempotencyKey returns the existing order without re-publishing.
+// A duplicate IdempotencyKey returns the existing order and does not insert again.
+// If that order is still pending, the job is published again so a failed publish
+// can be retried. Later statuses are left alone.
 func (s *OrderService) Create(in CreateOrderInput) (Order, error) {
 	if in.IdempotencyKey == "" {
 		return Order{}, ErrIdempotencyKeyRequired
@@ -105,6 +107,11 @@ func (s *OrderService) Create(in CreateOrderInput) (Order, error) {
 	if existing, ok, err := s.orders.GetByIdempotencyKey(in.IdempotencyKey); err != nil {
 		return Order{}, err
 	} else if ok {
+		if existing.Status == domain.StatusPending {
+			if err := s.pub.PublishOrderCreated(existing.ID); err != nil {
+				return Order{}, fmt.Errorf("publish order: %w", err)
+			}
+		}
 		return existing, nil
 	}
 
