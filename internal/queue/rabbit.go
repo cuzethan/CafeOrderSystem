@@ -9,10 +9,15 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
-// OrderCreatedQueue is the durable queue of order IDs waiting for ProcessOrder.
-const OrderCreatedQueue = "order.created"
+const (
+	// OrderCreatedQueue is the durable queue of order IDs waiting for ProcessOrder.
+	OrderCreatedQueue = "order.created"
+	// OrderUpdatedQueue is the durable queue of order IDs the API broadcasts to kitchen clients.
+	// The worker publishes here after accept; the hub lives in the API process.
+	OrderUpdatedQueue = "order.updated"
+)
 
-// Publisher sends order-created jobs to RabbitMQ.
+// Publisher sends order jobs to RabbitMQ.
 type Publisher struct {
 	conn     *amqp.Connection
 	ch       *amqp.Channel
@@ -20,7 +25,7 @@ type Publisher struct {
 	mu       sync.Mutex
 }
 
-// NewPublisher dials RabbitMQ, declares the order queue, and enables publisher confirms.
+// NewPublisher dials RabbitMQ, declares the order queues, and enables publisher confirms.
 func NewPublisher(url string) (*Publisher, error) {
 	conn, ch, err := dial(url)
 	if err != nil {
@@ -40,19 +45,28 @@ func NewPublisher(url string) (*Publisher, error) {
 
 // PublishOrderCreated publishes the order ID and waits for a broker confirm.
 func (p *Publisher) PublishOrderCreated(orderID string) error {
+	return p.publish(OrderCreatedQueue, orderID)
+}
+
+// PublishOrderUpdated publishes an accepted order ID for the API to broadcast.
+func (p *Publisher) PublishOrderUpdated(orderID string) error {
+	return p.publish(OrderUpdatedQueue, orderID)
+}
+
+func (p *Publisher) publish(queueName, body string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	pubCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err := p.ch.PublishWithContext(pubCtx, "", OrderCreatedQueue, false, false, amqp.Publishing{
+	err := p.ch.PublishWithContext(pubCtx, "", queueName, false, false, amqp.Publishing{
 		ContentType:  "text/plain",
 		DeliveryMode: amqp.Persistent,
-		Body:         []byte(orderID),
+		Body:         []byte(body),
 	})
 	if err != nil {
-		return fmt.Errorf("publish order: %w", err)
+		return fmt.Errorf("publish %s: %w", queueName, err)
 	}
 
 	select {
@@ -61,7 +75,7 @@ func (p *Publisher) PublishOrderCreated(orderID string) error {
 			return fmt.Errorf("rabbitmq confirm channel closed")
 		}
 		if !c.Ack {
-			return fmt.Errorf("rabbitmq nacked order %s", orderID)
+			return fmt.Errorf("rabbitmq nacked %s %s", queueName, body)
 		}
 		return nil
 	case <-time.After(5 * time.Second):
@@ -76,15 +90,15 @@ func (p *Publisher) Close() error {
 	return closeConn(p.ch, p.conn)
 }
 
-// Consumer reads order-created jobs from RabbitMQ.
+// Consumer reads jobs from a RabbitMQ queue.
 type Consumer struct {
 	conn *amqp.Connection
 	ch   *amqp.Channel
 	msgs <-chan amqp.Delivery
 }
 
-// NewConsumer dials RabbitMQ and starts consuming the order queue.
-func NewConsumer(url string) (*Consumer, error) {
+// NewConsumer dials RabbitMQ and starts consuming queueName.
+func NewConsumer(url, queueName string) (*Consumer, error) {
 	conn, ch, err := dial(url)
 	if err != nil {
 		return nil, err
@@ -94,7 +108,7 @@ func NewConsumer(url string) (*Consumer, error) {
 		conn.Close()
 		return nil, fmt.Errorf("rabbitmq qos: %w", err)
 	}
-	msgs, err := ch.Consume(OrderCreatedQueue, "cafe-order-worker", false, false, false, false, nil)
+	msgs, err := ch.Consume(queueName, "cafe-"+queueName, false, false, false, false, nil)
 	if err != nil {
 		ch.Close()
 		conn.Close()
@@ -103,7 +117,7 @@ func NewConsumer(url string) (*Consumer, error) {
 	return &Consumer{conn: conn, ch: ch, msgs: msgs}, nil
 }
 
-// Deliveries returns the order-created message stream.
+// Deliveries returns the message stream.
 func (c *Consumer) Deliveries() <-chan amqp.Delivery {
 	return c.msgs
 }
@@ -123,10 +137,12 @@ func dial(url string) (*amqp.Connection, *amqp.Channel, error) {
 		conn.Close()
 		return nil, nil, fmt.Errorf("rabbitmq channel: %w", err)
 	}
-	if _, err := ch.QueueDeclare(OrderCreatedQueue, true, false, false, false, nil); err != nil {
-		ch.Close()
-		conn.Close()
-		return nil, nil, fmt.Errorf("declare queue: %w", err)
+	for _, name := range []string{OrderCreatedQueue, OrderUpdatedQueue} {
+		if _, err := ch.QueueDeclare(name, true, false, false, false, nil); err != nil {
+			ch.Close()
+			conn.Close()
+			return nil, nil, fmt.Errorf("declare queue %s: %w", name, err)
+		}
 	}
 	return conn, ch, nil
 }

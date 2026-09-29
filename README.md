@@ -12,8 +12,8 @@ Golang, PostgreSQL, RabbitMQ (planned), WebSockets, Docker, Prometheus.
 
 1. Kiosk `GET /menu` — load available items from Postgres.
 2. Kiosk `POST /orders` with `Idempotency-Key` — validate cart, save order as `pending`, return `202`.
-3. Worker (next) consumes the queue message and moves the order to `accepted`.
-4. Kitchen clients connect to `GET /ws/kitchen` and get live updates from the in-memory WebSocket hub (`orders.snapshot` on connect, then `order.updated`).
+3. Worker consumes `order.created`, moves the order to `accepted`, and publishes the order id on `order.updated`.
+4. The API consumes `order.updated` and broadcasts it on the in-memory kitchen hub. Clients connect at `GET /ws/kitchen` (`orders.snapshot` on connect, then `order.updated`).
 5. Staff `PATCH /orders/{id}/status` to advance: `accepted` → `preparing` → `ready` → `completed` (or cancel early).
 
 Duplicate `Idempotency-Key` values return the same order and do not create a second one.

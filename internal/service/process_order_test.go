@@ -39,8 +39,8 @@ func TestProcessOrderAcceptsPending(t *testing.T) {
 	}
 }
 
-// If RabbitMQ redelivers the same message after we already accepted the order,
-// ProcessOrder must succeed without updating or notifying again (idempotent).
+// If RabbitMQ redelivers after the status write, do not update again.
+// Notify once more so a failed kitchen publish on the first attempt is retried.
 func TestProcessOrderIdempotentWhenAlreadyAccepted(t *testing.T) {
 	store := &fakeOrderStore{
 		byKey: map[string]Order{},
@@ -57,8 +57,8 @@ func TestProcessOrderIdempotentWhenAlreadyAccepted(t *testing.T) {
 	if store.updateCalls != 0 {
 		t.Fatalf("updateCalls = %d, want 0", store.updateCalls)
 	}
-	if notifier.calls != 0 {
-		t.Fatalf("notifier calls = %d, want 0", notifier.calls)
+	if notifier.calls != 1 || notifier.lastID != "ord-1" {
+		t.Fatalf("notifier calls=%d id=%q", notifier.calls, notifier.lastID)
 	}
 }
 

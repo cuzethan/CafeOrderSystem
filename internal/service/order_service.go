@@ -148,7 +148,8 @@ func (s *OrderService) Create(in CreateOrderInput) (Order, error) {
 }
 
 // ProcessOrder is the worker entrypoint: pending -> accepted, then notify kitchen.
-// Already-accepted orders are treated as success (idempotent redelivery).
+// Already-accepted orders skip the status write. They still notify so a redelivered
+// message can reach the kitchen after a failed publish. Duplicate notifications are safe.
 func (s *OrderService) ProcessOrder(orderID string) error {
 	order, ok, err := s.orders.GetByID(orderID)
 	if err != nil {
@@ -159,6 +160,9 @@ func (s *OrderService) ProcessOrder(orderID string) error {
 	}
 
 	if order.Status == domain.StatusAccepted {
+		if err := s.notifier.NotifyOrderUpdated(order); err != nil {
+			return fmt.Errorf("notify: %w", err)
+		}
 		return nil
 	}
 

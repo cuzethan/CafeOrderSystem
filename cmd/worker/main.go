@@ -37,8 +37,15 @@ func main() {
 	}
 	defer consumer.Close()
 
-	// The kitchen hub lives in the API process. This worker only persists accepted.
-	orders := service.NewOrderService(store, store, queue.NoopPublisher{}, nil)
+	updates, err := waitForPublisher(cfg.RabbitMQURL)
+	if err != nil {
+		log.Fatalf("rabbitmq publisher: %v", err)
+	}
+	defer updates.Close()
+
+	// The kitchen hub lives in the API process. Publish order.updated after accept
+	// so the API can broadcast to connected displays.
+	orders := service.NewOrderService(store, store, queue.NoopPublisher{}, kitchenNotifier{pub: updates})
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
@@ -100,7 +107,7 @@ func waitForPostgres(ctx context.Context, databaseURL string) (*postgres.Store, 
 func waitForRabbit(url string) (*queue.Consumer, error) {
 	var last error
 	for i := 0; i < 30; i++ {
-		consumer, err := queue.NewConsumer(url)
+		consumer, err := queue.NewConsumer(url, queue.OrderCreatedQueue)
 		if err == nil {
 			return consumer, nil
 		}
@@ -109,4 +116,28 @@ func waitForRabbit(url string) (*queue.Consumer, error) {
 		time.Sleep(time.Second)
 	}
 	return nil, last
+}
+
+func waitForPublisher(url string) (*queue.Publisher, error) {
+	var last error
+	for i := 0; i < 30; i++ {
+		publisher, err := queue.NewPublisher(url)
+		if err == nil {
+			return publisher, nil
+		}
+		last = err
+		log.Printf("waiting for rabbitmq publisher: %v", err)
+		time.Sleep(time.Second)
+	}
+	return nil, last
+}
+
+// kitchenNotifier forwards an accepted order to the API over RabbitMQ.
+// The API consumes that message and broadcasts on its in-memory hub.
+type kitchenNotifier struct {
+	pub *queue.Publisher
+}
+
+func (n kitchenNotifier) NotifyOrderUpdated(order service.Order) error {
+	return n.pub.PublishOrderUpdated(order.ID)
 }

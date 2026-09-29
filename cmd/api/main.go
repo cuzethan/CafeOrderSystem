@@ -9,6 +9,8 @@ import (
 	"syscall"
 	"time"
 
+	amqp "github.com/rabbitmq/amqp091-go"
+
 	"github.com/cuzethan/CafeOrderSystem/internal/config"
 	"github.com/cuzethan/CafeOrderSystem/internal/httpapi"
 	"github.com/cuzethan/CafeOrderSystem/internal/queue"
@@ -45,8 +47,16 @@ func main() {
 		return orders
 	})
 
+	updates, err := waitForUpdates(cfg.RabbitMQURL)
+	if err != nil {
+		log.Fatalf("rabbitmq updates: %v", err)
+	}
+	defer updates.Close()
+
 	orders := service.NewOrderService(store, store, publisher, hub)
 	api := &httpapi.Handler{Orders: orders, Menu: store, Ready: store, Hub: hub}
+
+	go consumeOrderUpdates(store, hub, updates)
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
@@ -79,6 +89,52 @@ func waitForPostgres(ctx context.Context, databaseURL string) (*postgres.Store, 
 		}
 		last = err
 		log.Printf("waiting for postgres: %v", err)
+		time.Sleep(time.Second)
+	}
+	return nil, last
+}
+
+func consumeOrderUpdates(store *postgres.Store, hub *ws.Hub, updates *queue.Consumer) {
+	log.Printf("api consuming %s", queue.OrderUpdatedQueue)
+	for delivery := range updates.Deliveries() {
+		handleOrderUpdated(store, hub, delivery)
+	}
+}
+
+func handleOrderUpdated(store *postgres.Store, hub *ws.Hub, delivery amqp.Delivery) {
+	orderID := string(delivery.Body)
+	order, ok, err := store.GetByID(orderID)
+	if err != nil {
+		log.Printf("load %s for kitchen: %v", orderID, err)
+		_ = delivery.Nack(false, true)
+		time.Sleep(time.Second)
+		return
+	}
+	if !ok {
+		log.Printf("kitchen update for missing order %s", orderID)
+		_ = delivery.Ack(false)
+		return
+	}
+	if err := hub.NotifyOrderUpdated(order); err != nil {
+		log.Printf("broadcast %s: %v", orderID, err)
+		_ = delivery.Nack(false, true)
+		time.Sleep(time.Second)
+		return
+	}
+	if ackErr := delivery.Ack(false); ackErr != nil {
+		log.Printf("ack update %s: %v", orderID, ackErr)
+	}
+}
+
+func waitForUpdates(url string) (*queue.Consumer, error) {
+	var last error
+	for i := 0; i < 30; i++ {
+		consumer, err := queue.NewConsumer(url, queue.OrderUpdatedQueue)
+		if err == nil {
+			return consumer, nil
+		}
+		last = err
+		log.Printf("waiting for rabbitmq updates: %v", err)
 		time.Sleep(time.Second)
 	}
 	return nil, last
